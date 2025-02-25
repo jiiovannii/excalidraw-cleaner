@@ -1,134 +1,167 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+"use strict";
 
-// Remember to rename these classes and interfaces!
+var e = require("obsidian");
 
-interface MyPluginSettings {
-	mySetting: string;
+const DEFAULT_SETTINGS = {
+    deleteOption: ".trash", // Options: ".trash", "system-trash", "permanent"
+    logsModal: true,
+    excludedFolders: "",
+    ribbonIcon: false,
+    excludeSubfolders: false,
+};
+
+class ClearUnusedExcalidrawSettingsTab extends e.PluginSettingTab {
+    constructor(app, plugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    display() {
+        let { containerEl: t } = this;
+        t.empty();
+        t.createEl("h2", { text: "Clear Unused Excalidraw Settings" });
+    
+        new e.Setting(t)
+            .setName("Ribbon Icon")
+            .setDesc("Enable to show a ribbon icon for clearing unused Excalidraw files.")
+            .addToggle((e) =>
+                e.setValue(this.plugin.settings.ribbonIcon).onChange((val) => {
+                    this.plugin.settings.ribbonIcon = val;
+                    this.plugin.saveSettings();
+                    this.plugin.refreshIconRibbon();
+                })
+            );
+    
+        new e.Setting(t)
+            .setName("Deleted File Destination")
+            .setDesc("Choose where to move deleted Excalidraw files.")
+            .addDropdown((e) => {
+                e.addOption("permanent", "Delete Permanently");
+                e.addOption(".trash", "Move to Obsidian Trash");
+                e.addOption("system-trash", "Move to System Trash");
+                e.setValue(this.plugin.settings.deleteOption);
+                e.onChange((val) => {
+                    this.plugin.settings.deleteOption = val;
+                    this.plugin.saveSettings();
+                });
+            });
+    
+        new e.Setting(t)
+            .setName("Embedded Excalidrawings Folder")
+            .setDesc("Enter a specified folder for Excalidraw file detection, where embedded files are stored (e.g., vault/Excalidraw/)")
+            .addText((text) =>
+                text
+                    .setValue(this.plugin.settings.excalidrawFolder)
+                    .onChange((val) => {
+                        this.plugin.settings.excalidrawFolder = val;
+                        this.plugin.saveSettings();
+                    })
+            );
+    
+        new e.Setting(t)
+            .setName("Excluded Subfolders")
+            .setDesc("Enter each subfolder name on a separate line. Files in these subfolders will be excluded from deletion (case-sensitive).")
+            .addTextArea((text) =>
+                text
+                    .setValue(this.plugin.settings.excludedSubfolders)
+                    .onChange((val) => {
+                        this.plugin.settings.excludedSubfolders = val;
+                        this.plugin.saveSettings();
+                    })
+            );
+    }
+    
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+class ClearUnusedExcalidrawPlugin extends e.Plugin {
+    async onload() {
+        console.log("Clear Unused Excalidraw plugin loaded...");
+        await this.loadSettings();
+        this.addSettingTab(new ClearUnusedExcalidrawSettingsTab(this.app, this));
+
+        this.addCommand({
+            id: "clear-unused-excalidraw",
+            name: "Clear Unembedded Excalidraw Files",
+            callback: () => this.clearUnusedExcalidrawFiles(),
+        });
+
+        this.refreshIconRibbon();
+    }
+
+    refreshIconRibbon() {
+        if (this.settings.ribbonIcon) {
+            this.ribbonIconEl = this.addRibbonIcon("eraser", "Clear Unused Excalidraw Files", () => {
+                this.clearUnusedExcalidrawFiles();
+            });
+        }
+    }
+
+async clearUnusedExcalidrawFiles() {
+    const files = this.app.vault.getFiles();
+    const usedFiles = new Set();
+    // Filter for Excalidraw files in the adjustable folder
+    const allExcalidrawFiles = files.filter((file) =>
+        (file.name.endsWith(".excalidraw.md") || file.basename.endsWith(".excalidraw")) &&
+        file.path.includes(this.settings.excalidrawFolder)
+    );
+
+    // Parse the excluded subfolders setting (each line is a separate entry)
+    const excludedSubfolders = this.settings.excludedSubfolders
+    ? this.settings.excludedSubfolders.split("\n").map(s => s.trim()).filter(s => s.length > 0)
+    : [];
+
+
+    // Further filter out files that are in any excluded subfolder
+    const filteredExcalidrawFiles = allExcalidrawFiles.filter(file => {
+        return !excludedSubfolders.some(subfolder => file.path.includes(subfolder));
+    });
+
+    console.log("All Excalidraw files:", allExcalidrawFiles.map(f => f.path));
+    console.log("Filtered Excalidraw files (after exclusions):", filteredExcalidrawFiles.map(f => f.path));
+
+    // Identify used Excalidraw files by scanning markdown and canvas files.
+    for (const file of files) {
+        if (file.extension === "md" || file.extension === "canvas") {
+            const content = await this.app.vault.read(file);
+            for (const excalidrawFile of filteredExcalidrawFiles) {
+                const baseName = excalidrawFile.basename; // e.g., "20250223_205657.excalidraw"
+                const fullPath = excalidrawFile.path;
+                if (
+                    content.includes(`[[${baseName}]]`) ||
+                    content.includes(`![[${baseName}]]`) ||
+                    content.includes(fullPath)
+                ) {
+                    usedFiles.add(fullPath);
+                }
+            }
+        }
+    }
+
+    // Delete unused Excalidraw files
+    let deletedCount = 0;
+    let logText = "";
+    for (const file of filteredExcalidrawFiles) {
+        if (!usedFiles.has(file.path)) {
+            await this.app.vault.trash(file, this.settings.deleteOption !== "permanent");
+            logText += `Deleted: ${file.path}\n`;
+            deletedCount++;
+        }
+    }
+
+    if (deletedCount > 0) {
+        new e.Notice(logText);
+    } else {
+        new e.Notice("No unused Excalidraw files found.");
+    }
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
 
-	async onload() {
-		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-	}
-
-	onunload() {
-
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const {containerEl} = this;
-
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
-	}
-}
+module.exports = ClearUnusedExcalidrawPlugin;
