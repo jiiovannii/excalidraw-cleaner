@@ -1,7 +1,7 @@
 {
-    "id": "ju-clear-unused-sketches",
-    "name": "Unused Excalidraw Remover",
-    "version": "1",
+    "id": "ju-excalidraw-cleaner",
+    "name": "Excalidraw Cleaner",
+    "version": "1.15.5",
     "minAppVersion": "0",
     "description": "Clear and delete unembedded excalidraw sketches.",
     "author": "jiovanni",
